@@ -1581,6 +1581,7 @@ def cloudmail_get_oai_code(
         log_callback=log_callback,
         cancel_callback=cancel_callback,
         resend_callback=resend_callback,
+        public_token=config.get("cloudmail_public_token", "") or "",
     )
 
 

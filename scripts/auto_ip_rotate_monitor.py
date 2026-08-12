@@ -57,6 +57,7 @@ def _progress_file() -> str:
     if env and os.path.isfile(env):
         return env
     for candidate in (
+        os.path.join(_REPO_ROOT, "log", "batch_progress.json"),
         os.path.join(_REPO_ROOT, "log", "monitor_stats.json"),
         os.path.join(_REPO_ROOT, "log", "progress.json"),
     ):

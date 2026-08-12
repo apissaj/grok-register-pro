@@ -91,7 +91,13 @@ def get_admin_jwt(
     admin_password: str,
     force_refresh: bool = False,
 ) -> str:
-    """Cache admin JWT similar to public token; re-login when force_refresh."""
+    """Cache admin JWT similar to public token; re-login when force_refresh.
+
+    Honors a pre-fetched static JWT (config cloudmail_admin_jwt) to avoid the
+    KV write that /api/login performs on every login (Cloudflare KV daily put
+    limit). When a static JWT is available it is used directly; otherwise a
+    fresh login is performed and cached in memory.
+    """
     global _admin_jwt, _admin_jwt_config
     if not url or not admin_email or not admin_password:
         raise Exception("CloudMail 配置不完整")
@@ -99,6 +105,24 @@ def get_admin_jwt(
     with _admin_jwt_lock:
         if _admin_jwt and _admin_jwt_config == cache_key and not force_refresh:
             return _admin_jwt
+        # Static JWT from config (pre-fetched outside pipeline) → no KV write.
+        try:
+            import json as _json
+            import os as _os
+            _cfg_path = _os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                "config.json",
+            )
+            if _os.path.exists(_cfg_path):
+                with open(_cfg_path, "r", encoding="utf-8") as _f:
+                    _cfg = _json.load(_f)
+                static_jwt = str(_cfg.get("cloudmail_admin_jwt", "") or "").strip()
+                if static_jwt:
+                    _admin_jwt = static_jwt
+                    _admin_jwt_config = cache_key
+                    return _admin_jwt
+        except Exception:
+            pass
         token = login(http_post, url, admin_email, admin_password)
         _admin_jwt = token
         _admin_jwt_config = cache_key
@@ -251,6 +275,30 @@ def cleanup_address(
         print(f"[CloudMail] 删除邮箱失败: {email} -> {exc}")
 
 
+def create_mailbox_no_admin(
+    url: str,
+    domains: List[str],
+    username: str = "",
+) -> Tuple[str, str]:
+    """Generate a random catch-all address WITHOUT pre-creating it.
+
+    CloudMail domains are catch-all: any random address receives mail without
+    an admin /account/add call. This avoids the admin login (KV write) that
+    hits Cloudflare KV daily put limits under heavy farming.
+    """
+    cleaned = [item.strip() for item in domains if str(item).strip()]
+    if not url:
+        raise Exception("CloudMail URL 未配置")
+    if not cleaned:
+        raise Exception("CloudMail 需要在 defaultDomains 中配置可用域名")
+    global _domain_index
+    domain = cleaned[_domain_index % len(cleaned)]
+    _domain_index += 1
+    address = f"{(username or generate_username(10))}@{domain}"
+    # No KV write: address is created implicitly by catch-all delivery.
+    return address, "cloudmail_catch_all"
+
+
 def create_mailbox(
     http_post: HttpPost,
     url: str,
@@ -309,6 +357,7 @@ def wait_for_code(
     log_callback: Optional[Callable[[str], None]] = None,
     cancel_callback: Optional[Callable[[], bool]] = None,
     resend_callback: Optional[Callable[[], None]] = None,
+    public_token: Optional[str] = None,
 ) -> str:
     if not url:
         raise Exception("CloudMail URL 未配置")
@@ -316,7 +365,13 @@ def wait_for_code(
     seen_attempts = {}
     next_resend_at = time.time() + 35
     try:
-        public_token = get_shared_token(http_post, url, admin_email, admin_password)
+        # Use the caller-provided public token (from config) to avoid burning a
+        # KV write + invalidating other workers' tokens on every poll.
+        # genToken (KV write) is only used as a last-resort fallback.
+        if public_token:
+            token = str(public_token).strip()
+        else:
+            token = get_shared_token(http_post, url, admin_email, admin_password)
         if log_callback:
             log_callback("[Debug] CloudMail 公开 token 获取成功")
         while time.time() < deadline:
@@ -331,14 +386,14 @@ def wait_for_code(
                         log_callback(f"[Debug] 触发重发验证码失败: {exc}")
                 next_resend_at = time.time() + 35
             try:
-                messages = public_email_list(http_post, url, public_token, to_email=email, size=20)
+                messages = public_email_list(http_post, url, token, to_email=email, size=20)
             except Exception as exc:
                 err_msg = str(exc)
                 if log_callback:
                     log_callback(f"[Debug] CloudMail 邮件查询失败: {err_msg}")
                 if any(m in err_msg.lower() for m in ("token", "401", "unauthorized", "鉴权")):
                     try:
-                        public_token = get_shared_token(
+                        token = get_shared_token(
                             http_post, url, admin_email, admin_password, force_refresh=True
                         )
                         if log_callback:

@@ -208,7 +208,13 @@ def _restart_grok2api():
 
 
 # ─── Preflight ───────────────────────────────────────────────
-def _http_json(method: str, url: str, body=None, timeout: float = 10.0) -> dict:
+def _http_json(
+    method: str,
+    url: str,
+    body=None,
+    timeout: float = 10.0,
+    extra_headers: dict = None,
+) -> dict:
     data = None
     headers = {
         "Content-Type": "application/json",
@@ -220,6 +226,8 @@ def _http_json(method: str, url: str, body=None, timeout: float = 10.0) -> dict:
             "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
         ),
     }
+    if extra_headers:
+        headers.update(extra_headers)
     if body is not None:
         data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
@@ -297,25 +305,28 @@ def run_preflight() -> list:
             errors.append(msg)
         else:
             try:
-                result = _http_json(
-                    "POST",
-                    f"{base}/api/login",
-                    {"email": email, "password": password},
-                    timeout=12.0,
-                )
-                token = None
-                if isinstance(result, dict):
-                    data = result.get("data") if result.get("code") == 200 else result
-                    if isinstance(data, dict):
-                        token = data.get("token")
-                    if not token:
-                        token = result.get("token")
-                if token:
-                    log(f"[OK] CloudMail login ({base})")
-                else:
-                    msg = f"CloudMail login: no token in response ({result!r})"
+                # Preflight harus read-only: cek public token (tanpa KV write).
+                # Login admin menulis auth-uid:* ke KV → bakar 1 write per batch
+                # dan bisa kena "KV put() limit exceeded" saat KV penuh.
+                pub_token = str(cfg.get("cloudmail_public_token") or "").strip()
+                if not pub_token:
+                    msg = "CloudMail public_token kosong (config.json)"
                     log(f"[FAIL] {msg}")
                     errors.append(msg)
+                else:
+                    result = _http_json(
+                        "POST",
+                        f"{base}/api/public/emailList",
+                        {"size": 1},
+                        extra_headers={"Authorization": pub_token},
+                        timeout=12.0,
+                    )
+                    if isinstance(result, dict) and result.get("code") == 200:
+                        log(f"[OK] CloudMail public token ({base})")
+                    else:
+                        msg = f"CloudMail public token invalid ({result!r})"
+                        log(f"[FAIL] {msg}")
+                        errors.append(msg)
             except Exception as e:
                 msg = f"CloudMail login failed: {e}"
                 log(f"[FAIL] {msg}")

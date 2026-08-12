@@ -38,6 +38,9 @@ RISK_PATTERNS: Tuple[str, ...] = (
     "SSO超时",
     "Turnstile",
     "注册失败",
+    "注册风控",
+    "botFlagSource",
+    "risk=",
     "超时",
 )
 

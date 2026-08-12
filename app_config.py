@@ -24,6 +24,7 @@ DEFAULT_CONFIG = {
     "cloudmail_url": "",
     "cloudmail_admin_email": "",
     "cloudmail_password": "",
+    "cloudmail_admin_jwt": "",
     "tempik_api_base": "https://tempmail.hafizhmuzani.my.id",
     "tempik_default_domain": "hafizhmuzani.my.id",
     "proxy": "",
