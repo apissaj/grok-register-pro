@@ -98,6 +98,8 @@ def main(argv=None) -> int:
     p.add_argument("--size", type=int, default=50, help="accounts per batch")
     p.add_argument("--batches", type=int, default=4, help="number of batches")
     p.add_argument("--workers", type=int, default=4)
+    p.add_argument("--safe-mode", action="store_true",
+                   help="use 10 accounts/batch and 2 workers to reduce per-IP risk")
     p.add_argument("--min-yield", type=float, default=0.30,
                    help="stop if batch yield (success/total) < this")
     p.add_argument("--rotate-between", action="store_true",
@@ -129,6 +131,20 @@ def main(argv=None) -> int:
             "running": True,
         }
         _save_state(state)
+
+    if args.safe_mode:
+        # Override defaults so each WARP IP is touched by fewer accounts:
+        # rate-limit kicks in around 10-15 accounts/IP as 'sso_timeout' with
+        # no sso cookie issued. 2 workers + 10 accounts/batch keeps well below.
+        if args.size > 10:
+            print(f"[run_stage] safe-mode: clamping --size {args.size} -> 10")
+            args.size = 10
+        if args.workers > 2:
+            print(f"[run_stage] safe-mode: clamping --workers {args.workers} -> 2")
+            args.workers = 2
+        if not args.rotate_between:
+            print("[run_stage] safe-mode: forcing --rotate-between")
+            args.rotate_between = True
 
     print(f"[run_stage] plan: {args.batches} batches x {args.size} accounts "
           f"(workers={args.workers}, min_yield={args.min_yield:.0%})")
